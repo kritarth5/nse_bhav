@@ -191,16 +191,32 @@ def _fetch(
         size_kb = len(resp.content) / 1024
 
         if resp.status_code != 200:
-            msg = f"HTTP {resp.status_code} — skipped (holiday / weekend / not yet published)"
-            if verbose:
-                tqdm.write(f"  Status : {msg}")
+            if resp.status_code == 404:
+                msg = "HTTP 404 — skipped (holiday / weekend / not yet published)"
+                if verbose:
+                    tqdm.write(f"  Status : {msg}")
+            elif resp.status_code == 429:
+                msg = f"HTTP 429 — rate-limited by NSE; data for {d} will be missing"
+                tqdm.write(f"  Warning: {msg}")
+            elif resp.status_code == 403:
+                msg = f"HTTP 403 — blocked by NSE (bot detection); data for {d} will be missing"
+                tqdm.write(f"  Warning: {msg}")
+            else:
+                msg = f"HTTP {resp.status_code} — unexpected status; data for {d} will be missing"
+                tqdm.write(f"  Warning: {msg}")
             return None, msg
 
         if verbose:
             tqdm.write(f"  Status : {resp.status_code} OK  ({size_kb:.1f} KB in {elapsed:.2f}s)")
 
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-            csv_name = zf.namelist()[0]
+            names = zf.namelist()
+            if len(names) != 1:
+                tqdm.write(
+                    f"  Warning: ZIP for {d} contains {len(names)} entries; "
+                    f"reading only '{names[0]}'"
+                )
+            csv_name = names[0]
             if verbose:
                 uncompressed_kb = zf.getinfo(csv_name).file_size / 1024
                 tqdm.write(f"  ZIP    : {csv_name}  ({uncompressed_kb:.1f} KB uncompressed)")
@@ -515,6 +531,12 @@ def main() -> None:
             parser.error("--days must be a positive integer")
         pool = _weekdays(today - timedelta(days=args.days * 3 + 10), today)
         dates = pool[-args.days:]
+        if len(dates) < args.days:
+            print(
+                f"  Warning: only {len(dates)} weekday candidates available "
+                f"(requested {args.days}; NSE trading history starts {NSE_START_DATE}).",
+                file=sys.stderr,
+            )
         mode_desc = f"last {args.days} trading-day candidates"
 
     elif args.date:

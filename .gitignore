@@ -11,3 +11,6 @@ wheels/
 
 # Downloaded bhav copy data
 bhav_data/
+
+# Local environment / secrets
+.env
