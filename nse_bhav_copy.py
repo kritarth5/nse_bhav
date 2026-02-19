@@ -32,6 +32,18 @@ from tqdm import tqdm
 
 
 # ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class TodayDataUnavailableError(RuntimeError):
+    """Raised when --today is requested but the bhav copy is not yet published.
+
+    NSE typically publishes the bhav copy between 4–5 PM IST, after market
+    close at 3:30 PM IST.
+    """
+
+
+# ---------------------------------------------------------------------------
 # URL patterns
 # ---------------------------------------------------------------------------
 
@@ -52,6 +64,12 @@ _FORMAT_SWITCH = date(2024, 7, 8)
 
 # NSE began equity trading on this date
 NSE_START_DATE = date(1994, 11, 3)
+
+# Candidate-date count above which a time-estimate warning is shown
+LARGE_RANGE_THRESHOLD = 60  # roughly 3 months of weekdays
+
+# Empirical average seconds per HTTP fetch (varies by connection)
+_AVG_SECONDS_PER_DAY = 0.25
 
 _HEADERS = {
     "User-Agent": (
@@ -232,6 +250,35 @@ def _weekdays(start: date, end: date) -> list[date]:
 
 
 # ---------------------------------------------------------------------------
+# Range-size helpers
+# ---------------------------------------------------------------------------
+
+def _format_duration(seconds: float) -> str:
+    """Return a concise human-readable string for a duration in seconds."""
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    if seconds < 3600:
+        return f"{int(seconds / 60)} min"
+    return f"{seconds / 3600:.1f} hr"
+
+
+def _check_large_range(n_candidates: int) -> None:
+    """Print a time-estimate warning when the requested range is large.
+
+    Called before the download loop so users know what they're in for.
+    No-op when n_candidates <= LARGE_RANGE_THRESHOLD.
+    """
+    if n_candidates > LARGE_RANGE_THRESHOLD:
+        est = _format_duration(n_candidates * _AVG_SECONDS_PER_DAY)
+        print(
+            f"  Note: {n_candidates} candidate dates requested — "
+            f"estimated download time {est} "
+            f"({_AVG_SECONDS_PER_DAY}s avg per request; "
+            f"holidays are skipped automatically)."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -241,12 +288,14 @@ def run_download(
     merge: bool,
     series_filter: str | None,
     quiet: bool,
-) -> None:
+    today_mode: bool = False,
+) -> int:
     """
-    Download bhav copy for each date in *dates*.
+    Download bhav copy for each date in *dates*.  Returns success count.
 
-    merge=True  → one combined CSV covering all dates
-    merge=False → one CSV per trading day
+    merge=True     → one combined CSV covering all dates
+    merge=False    → one CSV per trading day
+    today_mode=True → raise TodayDataUnavailableError if no data found
     """
     verbose = not quiet
     session = _make_session()
@@ -302,8 +351,13 @@ def run_download(
     merged_path: Path | None = None
     if merge:
         if not frames:
-            print("\nNo data downloaded — nothing to save.", file=sys.stderr)
-            sys.exit(1)
+            if today_mode:
+                raise TodayDataUnavailableError(
+                    "Today's bhav copy is not yet available. "
+                    "NSE typically publishes it between 4–5 PM IST "
+                    "after market close at 3:30 PM IST."
+                )
+            return success
 
         merged = pd.concat(frames, ignore_index=True)
 
@@ -358,6 +412,8 @@ def run_download(
             print(f"  Output directory  : {output_dir.resolve()}/")
 
         print("─" * 56)
+
+    return success
 
 
 # ---------------------------------------------------------------------------
@@ -515,13 +571,23 @@ def main() -> None:
         print("=" * 56)
         print()
 
-    run_download(
-        dates=dates,
-        output_dir=output_dir,
-        merge=merge,
-        series_filter=args.series,
-        quiet=args.quiet,
-    )
+    # Warn if the range is large. --all already prints its own confirmation
+    # prompt with a file count, so skip the extra warning there.
+    if not args.all:
+        _check_large_range(len(dates))
+
+    try:
+        run_download(
+            dates=dates,
+            output_dir=output_dir,
+            merge=merge,
+            series_filter=args.series,
+            quiet=args.quiet,
+            today_mode=args.today,
+        )
+    except TodayDataUnavailableError as exc:
+        print(f"\nError: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
