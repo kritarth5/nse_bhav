@@ -13,8 +13,6 @@ import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
 load_dotenv()  # loads DATABASE_URL from .env
 
@@ -25,18 +23,11 @@ if not DATABASE_URL:
     )
 
 app = FastAPI(title="NSE Bhav Copy Viewer")
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 def _get_conn():
     """Open a fresh psycopg2 connection."""
     return psycopg2.connect(DATABASE_URL)
-
-
-@app.get("/")
-def root():
-    """Serve the single-page frontend."""
-    return FileResponse("static/index.html")
 
 
 @app.get("/api/symbols")
