@@ -22,6 +22,9 @@ from pathlib import Path
 
 import pandas as pd
 import psycopg2
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +164,7 @@ def _load_file(cur, path: Path) -> int:
             df[col] = None
 
     df = df[_OUTPUT_COLS]
+    df["series"] = df["series"].fillna("NA")
 
     buf = io.StringIO()
     df.to_csv(buf, index=False, na_rep="")

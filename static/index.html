@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NSE Stock Price Viewer</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 1000px;
+      margin: 32px auto;
+      padding: 0 16px;
+      background: #f8f9fa;
+      color: #1a1a2e;
+    }
+
+    h2 {
+      margin: 0 0 20px;
+      font-size: 1.4rem;
+      color: #0f3460;
+    }
+
+    #controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      background: #fff;
+      padding: 14px 16px;
+      border-radius: 8px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      margin-bottom: 12px;
+    }
+
+    #controls label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 0.85rem;
+      color: #555;
+    }
+
+    #symbol-input {
+      width: 190px;
+      padding: 6px 10px;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      font-size: 0.95rem;
+      text-transform: uppercase;
+    }
+
+    #series-select, input[type="date"] {
+      padding: 6px 8px;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      font-size: 0.85rem;
+      background: #fff;
+    }
+
+    #load-btn {
+      padding: 7px 18px;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    #load-btn:hover { background: #1d4ed8; }
+    #load-btn:disabled { background: #93c5fd; cursor: default; }
+
+    #status {
+      min-height: 22px;
+      font-size: 0.88rem;
+      color: #555;
+      padding: 0 2px;
+    }
+
+    #status.error { color: #dc2626; }
+
+    #summary {
+      display: none;
+      background: #fff;
+      border-left: 3px solid #2563eb;
+      padding: 10px 14px;
+      border-radius: 0 6px 6px 0;
+      font-size: 0.88rem;
+      color: #444;
+      margin-bottom: 10px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+
+    #summary strong { color: #0f3460; font-size: 1rem; }
+
+    #summary .sep { margin: 0 8px; color: #bbb; }
+
+    #chart-wrap {
+      display: none;
+      background: #fff;
+      padding: 16px;
+      border-radius: 8px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+
+    #price-chart { width: 100% !important; }
+  </style>
+</head>
+<body>
+
+<h2>NSE Stock Price Viewer</h2>
+
+<div id="controls">
+  <input
+    id="symbol-input"
+    list="symbol-list"
+    placeholder="Symbol e.g. RELIANCE"
+    autocomplete="off"
+    spellcheck="false"
+  />
+  <datalist id="symbol-list"></datalist>
+
+  <select id="series-select" title="Trading series">
+    <option value="EQ" selected>EQ – Equity</option>
+    <option value="BE">BE – Trade-for-trade</option>
+    <option value="SM">SM – SME</option>
+    <option value="BL">BL – Block deal</option>
+  </select>
+
+  <label>From <input type="date" id="from-date" /></label>
+  <label>To &nbsp;&nbsp;<input type="date" id="to-date" /></label>
+
+  <button id="load-btn">Load</button>
+</div>
+
+<div id="status">Loading symbol list…</div>
+
+<div id="summary">
+  <strong id="summary-symbol"></strong>
+  <span class="sep">|</span>
+  <span id="summary-count"></span> trading days
+  <span class="sep">|</span>
+  Latest close: ₹<span id="summary-close"></span>
+  <span class="sep">|</span>
+  Range: ₹<span id="summary-low"></span> – ₹<span id="summary-high"></span>
+</div>
+
+<div id="chart-wrap">
+  <canvas id="price-chart" height="400"></canvas>
+</div>
+
+<script>
+  let chart = null;
+
+  // ── helpers ──────────────────────────────────────────────────────────────
+
+  function setStatus(msg, isError = false) {
+    const el = document.getElementById('status');
+    el.textContent = msg;
+    el.className = isError ? 'error' : '';
+  }
+
+  function fmt(n) {
+    if (n == null) return '—';
+    return n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function fmtVol(n) {
+    if (n == null) return '—';
+    if (n >= 1_00_00_000) return (n / 1_00_00_000).toFixed(2) + ' Cr';
+    if (n >= 1_00_000)    return (n / 1_00_000).toFixed(2) + ' L';
+    return n.toLocaleString('en-IN');
+  }
+
+  // ── page load ────────────────────────────────────────────────────────────
+
+  document.addEventListener('DOMContentLoaded', async () => {
+    // Default date range: today ← 1 year
+    const today = new Date().toISOString().slice(0, 10);
+    const oneYearAgo = new Date(Date.now() - 365 * 86400 * 1000).toISOString().slice(0, 10);
+    document.getElementById('to-date').value = today;
+    document.getElementById('from-date').value = oneYearAgo;
+
+    // Populate datalist with all EQ symbols
+    try {
+      const resp = await fetch('/api/symbols');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const list = document.getElementById('symbol-list');
+      data.symbols.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s;
+        list.appendChild(opt);
+      });
+      setStatus('');
+    } catch (e) {
+      setStatus('Could not load symbol list — is the server connected to the database?', true);
+    }
+  });
+
+  // ── load chart ───────────────────────────────────────────────────────────
+
+  document.getElementById('load-btn').addEventListener('click', loadChart);
+  document.getElementById('symbol-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') loadChart();
+  });
+
+  async function loadChart() {
+    const symbol   = document.getElementById('symbol-input').value.trim().toUpperCase();
+    const series   = document.getElementById('series-select').value;
+    const fromDate = document.getElementById('from-date').value;
+    const toDate   = document.getElementById('to-date').value;
+
+    if (!symbol) {
+      setStatus('Please enter a stock symbol.', true);
+      return;
+    }
+
+    const btn = document.getElementById('load-btn');
+    btn.disabled = true;
+    setStatus('Loading…');
+
+    try {
+      const params = new URLSearchParams({ symbol, series, from_date: fromDate, to_date: toDate });
+      const resp = await fetch(`/api/history?${params}`);
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: `HTTP ${resp.status}` }));
+        setStatus(`Error: ${err.detail}`, true);
+        return;
+      }
+
+      const data = await resp.json();
+
+      if (data.count === 0) {
+        setStatus(
+          `No data found for ${symbol} (${series}) between ${fromDate} and ${toDate}. ` +
+          `Try a wider date range or a different series.`,
+          true
+        );
+        document.getElementById('summary').style.display = 'none';
+        document.getElementById('chart-wrap').style.display = 'none';
+        return;
+      }
+
+      renderChart(data);
+      setStatus('');
+    } catch (e) {
+      setStatus('Network error — check that the server is running.', true);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ── render ────────────────────────────────────────────────────────────────
+
+  function renderChart(data) {
+    const labels = data.data.map(r => r.date);
+    const closes = data.data.map(r => r.close);
+
+    if (chart) chart.destroy();
+
+    const canvas = document.getElementById('price-chart');
+    chart = new Chart(canvas.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: `${data.symbol} (${data.series}) — Close`,
+          data: closes,
+          borderColor: '#2563eb',
+          backgroundColor: 'rgba(37, 99, 235, 0.07)',
+          borderWidth: 1.5,
+          tension: 0,
+          pointRadius: 0,
+          pointHoverRadius: 5,
+          fill: true,
+        }]
+      },
+      options: {
+        responsive: true,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title(items) {
+                return items[0].label;
+              },
+              label(item) {
+                return `Close:  ₹${fmt(item.parsed.y)}`;
+              },
+              afterLabel(item) {
+                const row = data.data[item.dataIndex];
+                return [
+                  `Open:   ₹${fmt(row.open)}`,
+                  `High:   ₹${fmt(row.high)}`,
+                  `Low:    ₹${fmt(row.low)}`,
+                  `Volume: ${fmtVol(row.volume)}`,
+                ];
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: {
+              maxTicksLimit: 12,
+              maxRotation: 0,
+            },
+            grid: { color: 'rgba(0,0,0,0.04)' }
+          },
+          y: {
+            ticks: {
+              callback: v => `₹${v.toLocaleString('en-IN')}`
+            },
+            grid: { color: 'rgba(0,0,0,0.04)' }
+          }
+        }
+      }
+    });
+
+    // Summary bar
+    const latest = data.data[data.data.length - 1];
+    const allClose = data.data.map(r => r.close).filter(v => v != null);
+    const minClose = Math.min(...allClose);
+    const maxClose = Math.max(...allClose);
+
+    document.getElementById('summary-symbol').textContent = `${data.symbol} (${data.series})`;
+    document.getElementById('summary-count').textContent = data.count;
+    document.getElementById('summary-close').textContent = fmt(latest.close);
+    document.getElementById('summary-low').textContent = fmt(minClose);
+    document.getElementById('summary-high').textContent = fmt(maxClose);
+    document.getElementById('summary').style.display = 'block';
+    document.getElementById('chart-wrap').style.display = 'block';
+  }
+</script>
+</body>
+</html>
